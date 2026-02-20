@@ -1,0 +1,462 @@
+﻿<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Neon Run (Web)</title>
+  <style>
+    :root {
+      --bg: #05070f;
+      --panel: #0b1227;
+      --text: #dbeafe;
+      --muted: #93c5fd;
+      --accent: #22d3ee;
+      --danger: #ef4444;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 10% 20%, #0f172a 0%, transparent 35%),
+        radial-gradient(circle at 90% 80%, #082f49 0%, transparent 30%),
+        var(--bg);
+      color: var(--text);
+      font-family: Consolas, "Courier New", monospace;
+    }
+
+    .wrap {
+      width: min(96vw, 980px);
+      padding: 12px;
+      border: 1px solid #1e3a8a;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #0b1227, #060b1d);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      color: var(--muted);
+      flex-wrap: wrap;
+    }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 8px;
+      border: 1px solid #1e293b;
+      background: #060b1d;
+    }
+
+    .hint {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #94a3b8;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div>Neon Run (Web)</div>
+      <div>Move: WASD/Arrows | Dash: Space | Pause: Esc | Restart: R</div>
+    </div>
+    <canvas id="game" width="920" height="620" aria-label="Neon Run game"></canvas>
+    <div class="hint">High score is saved in this browser (localStorage).</div>
+  </div>
+
+  <script>
+    (() => {
+      const WIDTH = 920;
+      const HEIGHT = 620;
+      const canvas = document.getElementById('game');
+      const ctx = canvas.getContext('2d');
+      const KEY = new Set();
+
+      const state = {
+        running: true,
+        paused: false,
+        gameOver: false,
+        playerX: WIDTH * 0.5,
+        playerY: HEIGHT * 0.5,
+        playerR: 11,
+        speed: 230,
+        hp: 5,
+        score: 0,
+        highScore: Number(localStorage.getItem('neon_run_high_score') || 0),
+        multiplier: 1,
+        multiplierT: 0,
+        elapsed: 0,
+        enemyTimer: 0,
+        orbTimer: 0,
+        flashT: 0,
+        shakeT: 0,
+        dashCd: 0,
+        dashLen: 0,
+        vx: 0,
+        vy: 0,
+        enemies: [],
+        orbs: [],
+        particles: [],
+        lastTs: performance.now()
+      };
+
+      function reset() {
+        state.running = true;
+        state.paused = false;
+        state.gameOver = false;
+        state.playerX = WIDTH * 0.5;
+        state.playerY = HEIGHT * 0.5;
+        state.hp = 5;
+        state.score = 0;
+        state.multiplier = 1;
+        state.multiplierT = 0;
+        state.elapsed = 0;
+        state.enemyTimer = 0;
+        state.orbTimer = 0;
+        state.flashT = 0;
+        state.shakeT = 0;
+        state.dashCd = 0;
+        state.dashLen = 0;
+        state.vx = 0;
+        state.vy = 0;
+        state.enemies = [];
+        state.orbs = [];
+        state.particles = [];
+        for (let i = 0; i < 7; i++) spawnOrb();
+      }
+
+      function rand(min, max) {
+        return Math.random() * (max - min) + min;
+      }
+
+      function moveDir() {
+        let dx = 0;
+        let dy = 0;
+        if (KEY.has('w') || KEY.has('arrowup')) dy -= 1;
+        if (KEY.has('s') || KEY.has('arrowdown')) dy += 1;
+        if (KEY.has('a') || KEY.has('arrowleft')) dx -= 1;
+        if (KEY.has('d') || KEY.has('arrowright')) dx += 1;
+        const mag = Math.hypot(dx, dy);
+        return mag > 0 ? [dx / mag, dy / mag] : [0, 0];
+      }
+
+      function spawnEnemy() {
+        const side = Math.floor(rand(0, 4));
+        let x = 0;
+        let y = 0;
+        if (side === 0) { x = rand(0, WIDTH); y = -20; }
+        else if (side === 1) { x = WIDTH + 20; y = rand(0, HEIGHT); }
+        else if (side === 2) { x = rand(0, WIDTH); y = HEIGHT + 20; }
+        else { x = -20; y = rand(0, HEIGHT); }
+        const speed = rand(70, 135) + state.elapsed * 2.1;
+        const r = rand(9, 15);
+        state.enemies.push({ x, y, s: speed, r });
+      }
+
+      function spawnOrb() {
+        const margin = 35;
+        const x = rand(margin, WIDTH - margin);
+        const y = rand(margin, HEIGHT - margin);
+        const vals = [10, 12, 15, 18];
+        const v = vals[Math.floor(rand(0, vals.length))];
+        state.orbs.push({ x, y, r: 7, v, t: rand(0, 6.28) });
+      }
+
+      function emit(x, y, n, color, speedMul) {
+        for (let i = 0; i < n; i++) {
+          const a = rand(0, Math.PI * 2);
+          const s = rand(40, 180) * speedMul;
+          state.particles.push({
+            x, y,
+            vx: Math.cos(a) * s,
+            vy: Math.sin(a) * s,
+            t: rand(0.25, 0.8),
+            c: color
+          });
+        }
+      }
+
+      function endGame() {
+        state.gameOver = true;
+        if (state.score > state.highScore) {
+          state.highScore = state.score;
+          localStorage.setItem('neon_run_high_score', String(state.highScore));
+        }
+      }
+
+      function update(dt) {
+        if (state.paused || state.gameOver) return;
+
+        state.elapsed += dt;
+        state.enemyTimer += dt;
+        state.orbTimer += dt;
+        state.multiplierT = Math.max(0, state.multiplierT - dt);
+        state.flashT = Math.max(0, state.flashT - dt);
+        state.shakeT = Math.max(0, state.shakeT - dt);
+        state.dashCd = Math.max(0, state.dashCd - dt);
+
+        if (state.multiplierT <= 0) {
+          state.multiplier = Math.max(1, state.multiplier - dt * 0.5);
+        }
+
+        const spawnInterval = Math.max(0.22, 1.2 - state.elapsed * 0.014);
+        while (state.enemyTimer >= spawnInterval) {
+          state.enemyTimer -= spawnInterval;
+          spawnEnemy();
+        }
+
+        if (state.orbTimer >= 1.2 && state.orbs.length < 16) {
+          state.orbTimer = 0;
+          spawnOrb();
+        }
+
+        const [dx, dy] = moveDir();
+        if (state.dashLen > 0) {
+          state.dashLen -= dt;
+          state.playerX += state.vx * dt;
+          state.playerY += state.vy * dt;
+        } else {
+          state.vx = dx * state.speed;
+          state.vy = dy * state.speed;
+          state.playerX += state.vx * dt;
+          state.playerY += state.vy * dt;
+        }
+
+        state.playerX = Math.max(state.playerR, Math.min(WIDTH - state.playerR, state.playerX));
+        state.playerY = Math.max(state.playerR, Math.min(HEIGHT - state.playerR, state.playerY));
+
+        for (const orb of state.orbs) orb.t += dt * 4;
+
+        for (let i = 0; i < state.orbs.length;) {
+          const orb = state.orbs[i];
+          if (Math.hypot(state.playerX - orb.x, state.playerY - orb.y) <= state.playerR + orb.r) {
+            state.orbs.splice(i, 1);
+            const gain = Math.floor(orb.v * state.multiplier);
+            state.score += gain;
+            state.multiplier = Math.min(4, state.multiplier + 0.18);
+            state.multiplierT = 1.5;
+            emit(orb.x, orb.y, 11, '#22d3ee', 1.2);
+          } else {
+            i++;
+          }
+        }
+
+        for (let i = 0; i < state.enemies.length;) {
+          const e = state.enemies[i];
+          const vx = state.playerX - e.x;
+          const vy = state.playerY - e.y;
+          const d = Math.hypot(vx, vy);
+          if (d > 0) {
+            e.x += (vx / d) * e.s * dt;
+            e.y += (vy / d) * e.s * dt;
+          }
+          if (d <= state.playerR + e.r) {
+            if (state.dashLen > 0) {
+              state.score += Math.floor(30 * state.multiplier);
+              emit(e.x, e.y, 18, '#f59e0b', 1.8);
+              state.enemies.splice(i, 1);
+              continue;
+            }
+            state.hp -= 1;
+            state.flashT = 0.18;
+            state.shakeT = 0.22;
+            emit(state.playerX, state.playerY, 20, '#ef4444', 1.8);
+            state.enemies.splice(i, 1);
+            if (state.hp <= 0) {
+              endGame();
+              return;
+            }
+            i++;
+          } else {
+            i++;
+          }
+        }
+
+        for (let i = 0; i < state.particles.length;) {
+          const p = state.particles[i];
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+          p.t -= dt;
+          p.vx *= 0.94;
+          p.vy *= 0.94;
+          if (p.t <= 0) state.particles.splice(i, 1);
+          else i++;
+        }
+
+        state.score += Math.floor(dt * (6 + state.elapsed * 0.6));
+      }
+
+      function drawText(txt, x, y, color, size = 12, align = 'left', weight = 'normal') {
+        ctx.fillStyle = color;
+        ctx.font = `${weight} ${size}px Consolas, Courier New, monospace`;
+        ctx.textAlign = align;
+        ctx.fillText(txt, x, y);
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, WIDTH, HEIGHT);
+        const ox = state.shakeT > 0 ? rand(-5, 5) : 0;
+        const oy = state.shakeT > 0 ? rand(-5, 5) : 0;
+
+        ctx.fillStyle = '#060b1d';
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+        ctx.strokeStyle = '#0e1c36';
+        ctx.lineWidth = 1;
+        for (let x = 0; x <= WIDTH; x += 40) {
+          ctx.beginPath();
+          ctx.moveTo(x + ox * 0.2, 0);
+          ctx.lineTo(x + ox * 0.2, HEIGHT);
+          ctx.stroke();
+        }
+        for (let y = 0; y <= HEIGHT; y += 40) {
+          ctx.beginPath();
+          ctx.moveTo(0, y + oy * 0.2);
+          ctx.lineTo(WIDTH, y + oy * 0.2);
+          ctx.stroke();
+        }
+
+        for (const orb of state.orbs) {
+          const bob = Math.sin(orb.t) * 3;
+          const x = orb.x + ox * 0.4;
+          const y = orb.y + bob + oy * 0.4;
+          const r = orb.r;
+
+          ctx.fillStyle = '#22d3ee';
+          ctx.beginPath();
+          ctx.arc(x, y, r + 4, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#a5f3fc';
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        for (const e of state.enemies) {
+          const x = e.x + ox;
+          const y = e.y + oy;
+          ctx.fillStyle = '#7f1d1d';
+          ctx.beginPath();
+          ctx.arc(x, y, e.r + 2, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#ef4444';
+          ctx.beginPath();
+          ctx.arc(x, y, e.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        const pr = state.playerR + (state.dashLen > 0 ? 2 : 0);
+        const pc = state.dashLen > 0 ? '#22d3ee' : '#67e8f9';
+        const px = state.playerX + ox;
+        const py = state.playerY + oy;
+
+        ctx.fillStyle = '#0e7490';
+        ctx.beginPath();
+        ctx.arc(px, py, pr + 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = pc;
+        ctx.beginPath();
+        ctx.arc(px, py, pr, 0, Math.PI * 2);
+        ctx.fill();
+
+        for (const p of state.particles) {
+          const size = Math.max(1, Math.floor(p.t * 5));
+          ctx.fillStyle = p.c;
+          ctx.beginPath();
+          ctx.arc(p.x + ox * 0.6, p.y + oy * 0.6, size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        if (state.flashT > 0) {
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.33)';
+          ctx.fillRect(0, 0, WIDTH, HEIGHT);
+        }
+
+        drawText(`Score  ${state.score}`, 16, 34, '#dbeafe', 16, 'left', 'bold');
+        drawText(`High   ${state.highScore}`, 16, 56, '#93c5fd', 12);
+        drawText(`x${state.multiplier.toFixed(2)}`, 16, 76, '#93c5fd', 12);
+
+        drawText(`HP ${'o'.repeat(state.hp)}`, WIDTH - 12, 24, '#fca5a5', 12, 'right', 'bold');
+        const dashText = state.dashCd <= 0 ? 'READY' : `${state.dashCd.toFixed(1)}s`;
+        drawText(`DASH ${dashText}`, WIDTH - 12, 44, '#7dd3fc', 12, 'right');
+        drawText('Move: WASD/Arrows   Dash: Space   Pause: Esc', WIDTH - 12, HEIGHT - 12, '#94a3b8', 11, 'right');
+
+        if (state.paused) {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+          ctx.fillRect(0, 0, WIDTH, HEIGHT);
+          drawText('PAUSED', WIDTH / 2, HEIGHT / 2 - 15, '#e2e8f0', 24, 'center', 'bold');
+          drawText('Press Esc to resume', WIDTH / 2, HEIGHT / 2 + 16, '#94a3b8', 12, 'center');
+        }
+
+        if (state.gameOver) {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+          ctx.fillRect(0, 0, WIDTH, HEIGHT);
+          drawText('GAME OVER', WIDTH / 2, HEIGHT / 2 - 28, '#fca5a5', 30, 'center', 'bold');
+          drawText(`Score ${state.score}   High ${state.highScore}`, WIDTH / 2, HEIGHT / 2 + 6, '#e2e8f0', 15, 'center');
+          drawText('Press R to restart', WIDTH / 2, HEIGHT / 2 + 36, '#93c5fd', 12, 'center');
+        }
+      }
+
+      function frame(ts) {
+        const dt = Math.min(0.05, (ts - state.lastTs) / 1000);
+        state.lastTs = ts;
+        update(dt);
+        draw();
+        requestAnimationFrame(frame);
+      }
+
+      window.addEventListener('keydown', (e) => {
+        const key = e.key.toLowerCase();
+        KEY.add(key);
+
+        if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {
+          e.preventDefault();
+        }
+
+        if (state.gameOver && key === 'r') {
+          reset();
+          return;
+        }
+
+        if (key === 'escape' && !state.gameOver) {
+          state.paused = !state.paused;
+          return;
+        }
+
+        if (key === ' ' && !state.paused && !state.gameOver && state.dashCd <= 0) {
+          const [dx, dy] = moveDir();
+          if (dx !== 0 || dy !== 0) {
+            const dashSpeed = 520;
+            state.vx = dx * dashSpeed;
+            state.vy = dy * dashSpeed;
+            state.dashLen = 0.16;
+            state.dashCd = 1;
+            emit(state.playerX, state.playerY, 24, '#22d3ee', 2.4);
+          }
+        }
+      }, { passive: false });
+
+      window.addEventListener('keyup', (e) => {
+        KEY.delete(e.key.toLowerCase());
+      });
+
+      reset();
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+</html>
